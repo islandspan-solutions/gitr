@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use eframe::egui;
 use egui::{
-    epaint::{CubicBezierShape, PathShape},
+    epaint::CubicBezierShape,
     text::LayoutJob,
     Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2,
 };
@@ -14,6 +14,8 @@ use git2::Repository;
 use crate::commit::{self, CommitRow};
 use crate::config;
 use crate::diff;
+
+type ProgressCounters = (Arc<std::sync::Mutex<u64>>, Arc<std::sync::Mutex<u64>>);
 
 pub enum UpdateState {
     Idle,
@@ -112,7 +114,7 @@ pub struct App {
     pub confirm_checkout: Option<String>,
     pub update_state: UpdateState,
     pub pending_update: Arc<std::sync::Mutex<Option<UpdateState>>>,
-    pub dl_progress: Option<(Arc<std::sync::Mutex<u64>>, Arc<std::sync::Mutex<u64>>)>,
+    pub dl_progress: Option<ProgressCounters>,
     pub replace_failed: bool,
     pub checked_update: bool,
     pub shutdown: Arc<AtomicBool>,
@@ -162,7 +164,7 @@ impl App {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 if let Ok(out) = std::process::Command::new("git")
                     .current_dir(&watch_path)
-                    .args(&["status", "--porcelain"])
+                    .args(["status", "--porcelain"])
                     .output()
                 {
                     let cur = String::from_utf8_lossy(&out.stdout).to_string();
@@ -173,7 +175,7 @@ impl App {
                 }
                 if let Ok(meta) = std::fs::metadata(&head_path) {
                     if let Ok(modified) = meta.modified() {
-                        if last_head.map_or(true, |t| t != modified) {
+                        if last_head != Some(modified) {
                             watch_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                             last_head = Some(modified);
                         }
@@ -184,7 +186,8 @@ impl App {
                 }
             }
         });
-        let app = App {
+
+        App {
             repo_path,
             rows: Vec::new(),
             selected: None,
@@ -233,8 +236,7 @@ impl App {
             replace_failed: false,
             checked_update: false,
             shutdown,
-        };
-        app
+        }
     }
 
     fn reload(&mut self) {
@@ -242,7 +244,7 @@ impl App {
             Ok(repo) => match commit::build_rows(&repo, self.limit, self.all_refs) {
                 Ok(mut rows) => {
                     self.current_branch = String::from_utf8_lossy(
-                        &Command::new("git").current_dir(&self.repo_path).args(&["symbolic-ref", "--short", "HEAD"]).output().map(|o| o.stdout).unwrap_or_default()
+                        &Command::new("git").current_dir(&self.repo_path).args(["symbolic-ref", "--short", "HEAD"]).output().map(|o| o.stdout).unwrap_or_default()
                     ).trim().to_string();
                     self.load_status();
                     if !self.unstaged_files.is_empty() || !self.staged_files.is_empty() {
@@ -274,7 +276,7 @@ impl App {
                             });
                         }
                     }
-                    if let Ok(out) = Command::new("git").current_dir(&self.repo_path).args(&["stash", "list", "--format=%gd|%H|%s"]).output() {
+                    if let Ok(out) = Command::new("git").current_dir(&self.repo_path).args(["stash", "list", "--format=%gd|%H|%s"]).output() {
                         let text = String::from_utf8_lossy(&out.stdout);
                         for line in text.lines() {
                             let parts: Vec<&str> = line.splitn(3, '|').collect();
@@ -283,7 +285,7 @@ impl App {
                             let stash_oid = parts[1];
                             let msg = parts.get(2).unwrap_or(&"").to_string();
                             let parent_oid = String::from_utf8_lossy(
-                                &Command::new("git").current_dir(&self.repo_path).args(&["rev-parse", &format!("{stash_oid}^")]).output().map(|o| o.stdout).unwrap_or_default()
+                                &Command::new("git").current_dir(&self.repo_path).args(["rev-parse", &format!("{stash_oid}^")]).output().map(|o| o.stdout).unwrap_or_default()
                             ).trim().to_string();
                             let parent_lane = rows.iter().find(|r| r.oid.to_string() == parent_oid).map(|r| r.lane).unwrap_or(0);
                             let stash_lane = rows.iter().map(|r| r.lane).max().unwrap_or(0) + 1;
@@ -343,7 +345,7 @@ impl App {
             let hash = self.rows[i].oid.to_string();
             if let Ok(out) = Command::new("git")
                 .current_dir(&self.repo_path)
-                .args(&["diff-tree", "--no-commit-id", "-r", "--name-only", &hash])
+                .args(["diff-tree", "--no-commit-id", "-r", "--name-only", &hash])
                 .output()
             {
                 let text = String::from_utf8_lossy(&out.stdout);
@@ -387,7 +389,7 @@ impl App {
             if self.rows[i].is_working {
                 let out = Command::new("git")
                     .current_dir(&self.repo_path)
-                    .args(&["diff", "HEAD"])
+                    .args(["diff", "HEAD"])
                     .output();
                 self.diff_text = match out {
                     Ok(o) => Some(String::from_utf8_lossy(&o.stdout).to_string()),
@@ -415,7 +417,7 @@ impl App {
     fn load_status(&mut self) {
         if let Ok(out) = Command::new("git")
             .current_dir(&self.repo_path)
-            .args(&["status", "--porcelain"])
+            .args(["status", "--porcelain"])
             .output()
         {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -465,7 +467,11 @@ impl Drop for App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.set_visuals(egui::Visuals::dark());
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = config::C_TREE_BG;
+        visuals.window_fill = config::C_TREE_BG;
+        visuals.extreme_bg_color = config::C_TREE_BG;
+        ctx.set_visuals(visuals);
         if let Some(state) = self.pending_update.lock().unwrap().take() {
             self.update_state = state;
         }
@@ -648,7 +654,9 @@ impl eframe::App for App {
                 draw_details(self, ui);
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).fill(config::C_TREE_BG))
+            .show(ctx, |ui| {
             let file_count = self.changed_files.len();
             if file_count > 0 {
                 let is_working = self.selected.map(|i| self.rows[i].is_working).unwrap_or(false);
@@ -794,7 +802,7 @@ impl eframe::App for App {
                         ui.add_space(8.0);
                     });
             }
-            UpdateState::Downloading { .. } => {
+            UpdateState::Downloading => {
                 let (d, t) = self.dl_progress.as_ref().map(|(dl, dt)| {
                     (*dl.lock().unwrap(), *dt.lock().unwrap())
                 }).unwrap_or((0, 0));
@@ -838,16 +846,16 @@ impl eframe::App for App {
                             if ui.add_sized([btn_w, 32.0], egui::Button::new("Replace & Restart")).clicked() {
                                 let replaced = if file_size == 0 { false } else {
                                     let _ = std::process::Command::new("rm")
-                                        .args(&["-f", &exe])
+                                        .args(["-f", &exe])
                                         .status();
                                     let ok = std::process::Command::new("cp")
-                                        .args(&[&p, &exe])
+                                        .args([&p, &exe])
                                         .status()
                                         .map(|s| s.success())
                                         .unwrap_or(false);
                                     if ok {
                                         let _ = std::process::Command::new("chmod")
-                                            .args(&["+x", &exe])
+                                            .args(["+x", &exe])
                                             .status();
                                     }
                                     ok
@@ -948,26 +956,45 @@ impl eframe::App for App {
                                 self.create_branch_error = Some("Enter a branch name".to_string());
                             } else {
                                 self.create_branch_error = None;
-                                let exists = Command::new("git").current_dir(&repo_path).args(&["rev-parse", "--verify", &format!("refs/heads/{name}")]).output().map(|o| o.status.success()).unwrap_or(false);
+                                let exists = Command::new("git").current_dir(&repo_path).args(["rev-parse", "--verify", &format!("refs/heads/{name}")]).output().map(|o| o.status.success()).unwrap_or(false);
                                 if exists {
                                     self.create_branch_error = Some(format!("Branch \"{name}\" already exists"));
                                 } else {
                                     let do_checkout = self.create_branch_checkout;
                                     let mut error = String::new();
                                     if do_checkout {
-                                        let head = Command::new("git").current_dir(&repo_path).args(&["rev-parse", "HEAD"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-                                        let from_sha = Command::new("git").current_dir(&repo_path).args(&["rev-parse", &from]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-                                        let has_changes = !Command::new("git").current_dir(&repo_path).args(&["status", "--porcelain"]).output().map(|o| o.stdout.is_empty()).unwrap_or(true);
+                                        let head = Command::new("git").current_dir(&repo_path).args(["rev-parse", "HEAD"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+                                        let from_sha = Command::new("git").current_dir(&repo_path).args(["rev-parse", &from]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+                                        let has_changes = !Command::new("git").current_dir(&repo_path).args(["status", "--porcelain"]).output().map(|o| o.stdout.is_empty()).unwrap_or(true);
+                                        let mut stashed = false;
                                         if from_sha != head && has_changes {
-                                            let _ = Command::new("git").current_dir(&repo_path).args(&["stash"]).output();
+                                            let stash_before = stash_count(&repo_path);
+                                            let _ = Command::new("git").current_dir(&repo_path).args(["stash"]).output();
+                                            stashed = stash_count(&repo_path) != stash_before;
                                         }
-                                        match Command::new("git").current_dir(&repo_path).args(&["checkout", "-b", &name, &from]).output() {
-                                            Ok(o) if o.status.success() => { self.reload(); close = true; }
-                                            Ok(o) => { error = String::from_utf8_lossy(&o.stderr).trim().to_string(); }
-                                            Err(e) => { error = format!("{e}"); }
+                                        match Command::new("git").current_dir(&repo_path).args(["checkout", "-b", &name, &from]).output() {
+                                            Ok(o) if o.status.success() => {
+                                                if stashed {
+                                                    let _ = Command::new("git").current_dir(&repo_path).args(["stash", "pop"]).output();
+                                                }
+                                                self.reload();
+                                                close = true;
+                                            }
+                                            Ok(o) => {
+                                                if stashed {
+                                                    let _ = Command::new("git").current_dir(&repo_path).args(["stash", "pop"]).output();
+                                                }
+                                                error = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                                            }
+                                            Err(e) => {
+                                                if stashed {
+                                                    let _ = Command::new("git").current_dir(&repo_path).args(["stash", "pop"]).output();
+                                                }
+                                                error = format!("{e}");
+                                            }
                                         }
                                     } else {
-                                        match Command::new("git").current_dir(&repo_path).args(&["branch", &name, &from]).output() {
+                                        match Command::new("git").current_dir(&repo_path).args(["branch", &name, &from]).output() {
                                             Ok(o) if o.status.success() => { self.reload(); close = true; }
                                             Ok(o) => { error = String::from_utf8_lossy(&o.stderr).trim().to_string(); }
                                             Err(e) => { error = format!("{e}"); }
@@ -1008,7 +1035,7 @@ impl eframe::App for App {
                         if ui.add_sized([btn_w, 32.0], egui::Button::new("Rename")).clicked() {
                             let _ = std::process::Command::new("git")
                                 .current_dir(&repo_path)
-                                .args(&["branch", "-m", &old, &self.rename_new])
+                                .args(["branch", "-m", &old, &self.rename_new])
                                 .output();
                             self.reload();
                             close = true;
@@ -1060,7 +1087,7 @@ impl eframe::App for App {
                             std::thread::spawn(move || {
                                 let flag = if force { "-D" } else { "-d" };
                                 let mut error = String::new();
-                                let mut ok = match Command::new("git").current_dir(&rp).args(&["branch", flag, &branch]).output() {
+                                let mut ok = match Command::new("git").current_dir(&rp).args(["branch", flag, &branch]).output() {
                                     Ok(o) if o.status.success() => true,
                                     Ok(o) => {
                                         error = String::from_utf8_lossy(&o.stderr).trim().to_string();
@@ -1072,7 +1099,7 @@ impl eframe::App for App {
                                     }
                                 };
                                 if ok && del_origin {
-                                    match Command::new("git").current_dir(&rp).args(&["push", "origin", "--delete", &branch]).output() {
+                                    match Command::new("git").current_dir(&rp).args(["push", "origin", "--delete", &branch]).output() {
                                         Ok(o) if o.status.success() => {}
                                         Ok(o) => {
                                             error = String::from_utf8_lossy(&o.stderr).trim().to_string();
@@ -1129,7 +1156,7 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         let btn_w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
                         if ui.add_sized([btn_w, 32.0], egui::Button::new("Yes")).clicked() {
-                            let _ = std::process::Command::new("git").current_dir(&repo_path).args(&["tag", "-d", &del_tag]).output();
+                            let _ = std::process::Command::new("git").current_dir(&repo_path).args(["tag", "-d", &del_tag]).output();
                             self.reload();
                             close = true;
                         }
@@ -1160,17 +1187,28 @@ impl eframe::App for App {
                     ui.horizontal(|ui| {
                         let btn_w = (ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0;
                         if ui.add_sized([btn_w, 32.0], egui::Button::new("Stash & Checkout")).clicked() {
-                            let _ = std::process::Command::new("git").current_dir(&repo_path).args(&["stash"]).output();
-                            let out = std::process::Command::new("git").current_dir(&repo_path).args(&["checkout", &target]).output();
+                            let stash_before = stash_count(&repo_path);
+                            let _ = std::process::Command::new("git").current_dir(&repo_path).args(["stash"]).output();
+                            let stashed = stash_count(&repo_path) != stash_before;
+                            let out = std::process::Command::new("git").current_dir(&repo_path).args(["checkout", &target]).output();
                             match out {
                                 Ok(o) if o.status.success() => {
+                                    if stashed {
+                                        let _ = std::process::Command::new("git").current_dir(&repo_path).args(["stash", "pop"]).output();
+                                    }
                                     self.reload();
                                     close = true;
                                 }
                                 Ok(o) => {
+                                    if stashed {
+                                        let _ = std::process::Command::new("git").current_dir(&repo_path).args(["stash", "pop"]).output();
+                                    }
                                     error_msg = String::from_utf8_lossy(&o.stderr).to_string();
                                 }
                                 Err(e) => {
+                                    if stashed {
+                                        let _ = std::process::Command::new("git").current_dir(&repo_path).args(["stash", "pop"]).output();
+                                    }
                                     error_msg = format!("{e}");
                                 }
                             }
@@ -1178,7 +1216,7 @@ impl eframe::App for App {
                         if ui.add_sized([btn_w, 32.0], egui::Button::new("Checkout")).clicked() {
                             let out = std::process::Command::new("git")
                                 .current_dir(&repo_path)
-                                .args(&["checkout", &target])
+                                .args(["checkout", &target])
                                 .output();
                             match out {
                                 Ok(o) if o.status.success() => {
@@ -1321,7 +1359,6 @@ fn draw_graph_inner(app: &mut App, ui: &mut egui::Ui) {
             let idx = ((pos.y - origin.y) / config::ROW_HEIGHT) as usize;
             (idx < app.rows.len()).then_some(idx)
         });
-        app.context_row = hover_row;
 
         if response.clicked() {
             if let Some(idx) = hover_row {
@@ -1348,7 +1385,7 @@ fn draw_graph_inner(app: &mut App, ui: &mut egui::Ui) {
                     let hash = app.rows[idx].oid.to_string();
                     let pending = app.pending_diff.clone();
                     std::thread::spawn(move || {
-                        let out = std::process::Command::new("git").current_dir(&repo).args(&["show", &hash]).output();
+                        let out = std::process::Command::new("git").current_dir(&repo).args(["show", &hash]).output();
                         let text = match out {
                             Ok(o) => Some(String::from_utf8_lossy(&o.stdout).to_string()),
                             Err(e) => Some(format!("failed to run git show: {e}")),
@@ -1447,102 +1484,7 @@ fn draw_graph_inner(app: &mut App, ui: &mut egui::Ui) {
             }
         }
 
-        response.context_menu(|ui| {
-            if let Some(branch) = &app.context_branch.clone() {
-                let is_stash = branch.starts_with("stash@{");
-                ui.set_min_width(200.0);
-                let label_color = if is_stash { Color32::from_rgb(0xcb, 0xa6, 0xf7) } else { Color32::from_rgb(0x89, 0xb4, 0xfa) };
-                ui.label(egui::RichText::new(branch).strong().size(12.0).color(label_color));
-                ui.separator();
-                if is_stash {
-                    if ui.button("Apply stash").clicked() {
-                        let _ = std::process::Command::new("git").current_dir(&app.repo_path).args(&["stash", "apply", branch]).output();
-                        app.reload();
-                        ui.close_menu();
-                    }
-                    if ui.button("Drop stash").clicked() {
-                        let _ = std::process::Command::new("git").current_dir(&app.repo_path).args(&["stash", "drop", branch]).output();
-                        app.reload();
-                        ui.close_menu();
-                    }
-                } else {
-                    let is_current = branch == &app.current_branch;
-                    let is_remote = branch.contains('/');
-                    if is_remote {
-                        if ui.button("Create branch…").clicked() {
-                            app.show_create_branch = true;
-                            app.create_branch_from = branch.clone();
-                            app.create_branch_name = branch.split('/').last().unwrap_or(branch).to_string();
-                            app.create_branch_checkout = true;
-                            app.create_branch_error = None;
-                            ui.close_menu();
-                        }
-                    } else {
-                        if ui.button("Checkout").clicked() {
-                            app.confirm_checkout = Some(branch.clone());
-                            ui.close_menu();
-                        }
-                    }
-                    if !is_remote {
-                        if ui.button("Create branch…").clicked() {
-                            app.show_create_branch = true;
-                            app.create_branch_from = branch.clone();
-                            app.create_branch_name = String::new();
-                            app.create_branch_checkout = false;
-                            app.create_branch_error = None;
-                            ui.close_menu();
-                        }
-                        if ui.button("Rename branch…").clicked() {
-                            app.rename_old = branch.clone();
-                            app.rename_new = branch.clone();
-                            app.show_rename = true;
-                            ui.close_menu();
-                        }
-                        if !is_current && ui.button("Delete branch").clicked() {
-                            app.confirm_delete = Some(branch.clone());
-                            app.del_origin = false;
-                            app.del_force = false;
-                            app.delete_error = None;
-                            app.delete_rx = None;
-                            ui.close_menu();
-                        }
-                    }
-                }
-            }
-            if let Some(tag) = &app.context_tag.clone() {
-                ui.set_min_width(200.0);
-                ui.label(egui::RichText::new(tag).strong().size(12.0).color(Color32::from_rgb(0xfa, 0xb3, 0x87)));
-                ui.separator();
-                if ui.button("Push tag").clicked() {
-                    let _ = std::process::Command::new("git").current_dir(&app.repo_path).args(&["push", "origin", tag]).output();
-                    app.reload();
-                    ui.close_menu();
-                }
-                if ui.button("Delete tag").clicked() {
-                    app.confirm_delete_tag = Some(tag.clone());
-                    ui.close_menu();
-                }
-            }
-            if app.context_branch.is_none() && app.context_tag.is_none() {
-                if let Some(row_idx) = app.context_row {
-                    if let Some(row) = app.rows.get(row_idx) {
-                        if !row.is_working && !row.is_stash {
-                            ui.set_min_width(200.0);
-                            ui.label(egui::RichText::new(format!("{}  {}", row.short, row.summary)).strong().size(12.0).color(Color32::from_rgb(0xcd, 0xd6, 0xf4)));
-                            ui.separator();
-                            if ui.button("Create branch…").clicked() {
-                                app.show_create_branch = true;
-                                app.create_branch_from = row.oid.to_string();
-                                app.create_branch_name = String::new();
-                                app.create_branch_checkout = false;
-                                app.create_branch_error = None;
-                                ui.close_menu();
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        let mut pill_hits: Vec<(Rect, String, bool)> = Vec::new();
 
         for (i, row) in app.rows.iter().enumerate() {
             let yc = y_center(i);
@@ -1558,10 +1500,10 @@ fn draw_graph_inner(app: &mut App, ui: &mut egui::Ui) {
                     (false, true) => ("UNSTAGED", Color32::from_rgb(0xf3, 0x8b, 0xa8)),
                     _ => ("WORKING", Color32::from_rgb(0xf9, 0xe2, 0xaf)),
                 };
-                tx = draw_pill(ui, tx, yc, pill_label, Color32::from_rgb(0x1e, 0x1e, 0x2e), pill_bg, false);
+                tx = draw_pill(ui, tx, yc, pill_label, Color32::from_rgb(0x1e, 0x1e, 0x2e), pill_bg, false).0;
             }
             if row.is_head && tx < cap_x {
-                tx = draw_pill(ui, tx, yc, "HEAD", Color32::from_rgb(0x1e, 0x1e, 0x2e), Color32::from_rgb(0xf3, 0x8b, 0xa8), false);
+                tx = draw_pill(ui, tx, yc, "HEAD", Color32::from_rgb(0x1e, 0x1e, 0x2e), Color32::from_rgb(0xf3, 0x8b, 0xa8), false).0;
             }
             for b in &row.branches {
                 if tx >= cap_x { break; }
@@ -1569,38 +1511,25 @@ fn draw_graph_inner(app: &mut App, ui: &mut egui::Ui) {
                 let bg = if row.is_stash {
                     Color32::from_rgb(0xcb, 0xa6, 0xf7)
                 } else if is_current { Color32::from_rgb(0xa6, 0xe3, 0xa1) } else { Color32::from_rgb(0x89, 0xb4, 0xfa) };
-                let pill_start = tx;
-                let pill_label = if is_current { format!("* {b}") } else { format!("{b}") };
-                tx = draw_pill(ui, tx, yc, &pill_label, Color32::from_rgb(0x1e, 0x1e, 0x2e), bg, is_current);
-                if let Some(pos) = response.hover_pos() {
-                    let row_top = origin.y + i as f32 * config::ROW_HEIGHT;
-                    if pos.y >= row_top && pos.y < row_top + config::ROW_HEIGHT && pos.x >= pill_start && pos.x < tx {
-                        app.context_branch = Some(b.clone());
-                        app.context_tag = None;
-                    }
-                }
+                let pill_label = if is_current { format!("* {b}") } else { b.to_string() };
+                let (tx_new, pill_rect) = draw_pill(ui, tx, yc, &pill_label, Color32::from_rgb(0x1e, 0x1e, 0x2e), bg, is_current);
+                tx = tx_new;
+                pill_hits.push((pill_rect, b.clone(), false));
             }
-        for t in &row.tags {
-            if tx >= cap_x { break; }
-            let pill_start = tx;
-            tx = draw_pill(
-                ui,
-                tx,
-                yc,
-                t,
-                Color32::from_rgb(0x3a, 0x3a, 0x42), // muted dark-gray pill background
-                Color32::from_rgb(0xc8, 0xc8, 0xcf), // soft light-gray text
-                false,
-            );
-            if let Some(pos) = response.hover_pos() {
-                let row_top = origin.y + i as f32 * config::ROW_HEIGHT;
-                if pos.y >= row_top && pos.y < row_top + config::ROW_HEIGHT
-                    && pos.x >= pill_start && pos.x < tx {
-                    app.context_tag = Some(t.clone());
-                    app.context_branch = None;
-                }
+            for t in &row.tags {
+                if tx >= cap_x { break; }
+                let (tx_new, pill_rect) = draw_pill(
+                    ui,
+                    tx,
+                    yc,
+                    t,
+                    Color32::from_rgb(0x3a, 0x3a, 0x42), // muted dark-gray pill background
+                    Color32::from_rgb(0xc8, 0xc8, 0xcf), // soft light-gray text
+                    false,
+                );
+                tx = tx_new;
+                pill_hits.push((pill_rect, t.clone(), true));
             }
-        }
 
             let msg_color = if row.is_stash {
                 Color32::from_rgb(0xcb, 0xa6, 0xf7)
@@ -1643,10 +1572,125 @@ fn draw_graph_inner(app: &mut App, ui: &mut egui::Ui) {
             }
         }
 
-        let _ = PathShape::convex_polygon(vec![], Color32::TRANSPARENT, Stroke::NONE);
+        response.context_menu(|ui| {
+            if response.secondary_clicked() {
+                let (mut branch_hit, mut tag_hit, mut row_hit) = (None, None, None);
+                if let Some(pos) = response.hover_pos() {
+                    for (r, label, is_tag) in &pill_hits {
+                        if r.contains(pos) {
+                            if *is_tag {
+                                tag_hit = Some(label.clone());
+                            } else {
+                                branch_hit = Some(label.clone());
+                            }
+                        }
+                    }
+                    let idx = ((pos.y - origin.y) / config::ROW_HEIGHT) as usize;
+                    row_hit = (idx < app.rows.len()).then_some(idx);
+                }
+                app.context_branch = branch_hit;
+                app.context_tag = tag_hit;
+                app.context_row = row_hit;
+            }
+
+            if let Some(branch) = &app.context_branch.clone() {
+                let is_stash = branch.starts_with("stash@{");
+                ui.set_min_width(200.0);
+                let label_color = if is_stash { Color32::from_rgb(0xcb, 0xa6, 0xf7) } else { Color32::from_rgb(0x89, 0xb4, 0xfa) };
+                ui.label(egui::RichText::new(branch).strong().size(12.0).color(label_color));
+                ui.separator();
+                if is_stash {
+                    if ui.button("Apply stash").clicked() {
+                        let _ = std::process::Command::new("git").current_dir(&app.repo_path).args(["stash", "apply", branch]).output();
+                        app.reload();
+                        ui.close_menu();
+                    }
+                    if ui.button("Drop stash").clicked() {
+                        let _ = std::process::Command::new("git").current_dir(&app.repo_path).args(["stash", "drop", branch]).output();
+                        app.reload();
+                        ui.close_menu();
+                    }
+                } else {
+                    let is_current = branch == &app.current_branch;
+                    let is_remote = branch.contains('/');
+                    if is_remote {
+                        if ui.button("Create branch…").clicked() {
+                            app.show_create_branch = true;
+                            app.create_branch_from = branch.clone();
+                            app.create_branch_name = branch.split('/').next_back().unwrap_or(branch).to_string();
+                            app.create_branch_checkout = true;
+                            app.create_branch_error = None;
+                            ui.close_menu();
+                        }
+                    } else {
+                        if ui.button("Checkout").clicked() {
+                            app.confirm_checkout = Some(branch.clone());
+                            ui.close_menu();
+                        }
+                    }
+                    if !is_remote {
+                        if ui.button("Create branch…").clicked() {
+                            app.show_create_branch = true;
+                            app.create_branch_from = branch.clone();
+                            app.create_branch_name = String::new();
+                            app.create_branch_checkout = false;
+                            app.create_branch_error = None;
+                            ui.close_menu();
+                        }
+                        if ui.button("Rename branch…").clicked() {
+                            app.rename_old = branch.clone();
+                            app.rename_new = branch.clone();
+                            app.show_rename = true;
+                            ui.close_menu();
+                        }
+                        if !is_current && ui.button("Delete branch").clicked() {
+                            app.confirm_delete = Some(branch.clone());
+                            app.del_origin = false;
+                            app.del_force = false;
+                            app.delete_error = None;
+                            app.delete_rx = None;
+                            ui.close_menu();
+                        }
+                    }
+                }
+            }
+            if let Some(tag) = &app.context_tag.clone() {
+                ui.set_min_width(200.0);
+                ui.label(egui::RichText::new(tag).strong().size(12.0).color(Color32::from_rgb(0xfa, 0xb3, 0x87)));
+                ui.separator();
+                if ui.button("Push tag").clicked() {
+                    let _ = std::process::Command::new("git").current_dir(&app.repo_path).args(["push", "origin", tag]).output();
+                    app.reload();
+                    ui.close_menu();
+                }
+                if ui.button("Delete tag").clicked() {
+                    app.confirm_delete_tag = Some(tag.clone());
+                    ui.close_menu();
+                }
+            }
+            if app.context_branch.is_none() && app.context_tag.is_none() {
+                if let Some(row_idx) = app.context_row {
+                    if let Some(row) = app.rows.get(row_idx) {
+                        if !row.is_working && !row.is_stash {
+                            ui.set_min_width(200.0);
+                            ui.label(egui::RichText::new(format!("{}  {}", row.short, row.summary)).strong().size(12.0).color(Color32::from_rgb(0xcd, 0xd6, 0xf4)));
+                            ui.separator();
+                            if ui.button("Create branch…").clicked() {
+                                app.show_create_branch = true;
+                                app.create_branch_from = row.oid.to_string();
+                                app.create_branch_name = String::new();
+                                app.create_branch_checkout = false;
+                                app.create_branch_error = None;
+                                ui.close_menu();
+                            }
+                        }
+                    }
+                }
+            }
+        });
 }
 
-fn draw_pill(ui: &egui::Ui, x: f32, y: f32, label: &str, fg: Color32, bg: Color32, bold: bool) -> f32 {
+fn draw_pill(ui: &egui::Ui, x: f32, y: f32, label: &str, fg: Color32, bg: Color32, bold: bool) -> (f32, Rect) {
     let painter = ui.painter();
     let galley = if bold {
         let font = FontId::proportional(13.0);
@@ -1660,7 +1704,16 @@ fn draw_pill(ui: &egui::Ui, x: f32, y: f32, label: &str, fg: Color32, bg: Color3
     let rect = Rect::from_min_size(Pos2::new(x, y - h / 2.0), Vec2::new(w, h));
     painter.rect_filled(rect, 2.0, bg);
     painter.galley(rect.min + Vec2::new(6.0, (h - galley.size().y) / 2.0), galley, fg);
-    rect.max.x + 6.0
+    (rect.max.x + 6.0, rect)
+}
+
+fn stash_count(repo_path: &str) -> String {
+    Command::new("git")
+        .current_dir(repo_path)
+        .args(["stash", "list"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
 }
 
 fn initials(name: &str) -> String {

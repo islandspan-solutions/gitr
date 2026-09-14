@@ -1,12 +1,18 @@
 use egui::Color32;
 
-pub const LANE_COLORS: [Color32; 6] = [
+pub const LANE_COLORS: [Color32; 12] = [
     Color32::from_rgb(0x89, 0xb4, 0xfa), // blue
     Color32::from_rgb(0xf3, 0x8b, 0xa8), // red/pink
     Color32::from_rgb(0xa6, 0xe3, 0xa1), // green
     Color32::from_rgb(0xcb, 0xa6, 0xf7), // mauve
     Color32::from_rgb(0xf9, 0xe2, 0xaf), // yellow
     Color32::from_rgb(0x89, 0xdc, 0xeb), // sky
+    Color32::from_rgb(0xfa, 0xb3, 0x87), // peach
+    Color32::from_rgb(0x94, 0xe2, 0xd5), // teal
+    Color32::from_rgb(0xb4, 0xbe, 0xfe), // lavender
+    Color32::from_rgb(0xeb, 0xa0, 0xac), // maroon
+    Color32::from_rgb(0x74, 0xc7, 0xec), // sapphire
+    Color32::from_rgb(0xf2, 0xcd, 0xcd), // flamingo
 ];
 
 pub const ROW_HEIGHT: f32 = 24.0;
@@ -22,6 +28,7 @@ pub const COL_INITIALS: f32 = 28.0;
 
 pub const C_TEXT: Color32 = Color32::from_rgb(0xcd, 0xd6, 0xf4);
 pub const C_SUBTEXT: Color32 = Color32::from_rgb(0x93, 0x99, 0xb2);
+pub const C_TREE_BG: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
 pub const C_SEL: Color32 = Color32::from_rgba_premultiplied(0x31, 0x32, 0x44, 200);
 pub const C_HOVER: Color32 = Color32::from_rgba_premultiplied(0x28, 0x28, 0x38, 120);
 

@@ -21,9 +21,9 @@ pub struct CommitRow {
     pub is_stash: bool,
 }
 
-fn collect_decorations(
-    repo: &Repository,
-) -> (HashMap<Oid, Vec<String>>, HashMap<Oid, Vec<String>>, Option<Oid>) {
+type RefDecorations = (HashMap<Oid, Vec<String>>, HashMap<Oid, Vec<String>>, Option<Oid>);
+
+fn collect_decorations(repo: &Repository) -> RefDecorations {
     let mut branches: HashMap<Oid, Vec<String>> = HashMap::new();
     let mut tags: HashMap<Oid, Vec<String>> = HashMap::new();
     let head_oid = repo.head().ok().and_then(|h| h.target());
